@@ -1,0 +1,266 @@
+library(tidyverse)
+library(caret)
+library(data.table)
+
+# Load the data sets
+#edx <- readRDS("edxURL")
+#validation <- readRDS("edxURL")
+
+# This extracts the four digit year of release from the title and uses it to generate a plot relating mean rating
+# and number of movies to the release year
+edx %>%
+  mutate(release = as.integer(substring(title, nchar(title) - 4, nchar(title) - 1))) %>%
+  select(rating, title, release) %>%
+  group_by(release) %>%
+  summarize(mean_rating = mean(rating), log_count = log10(n())) %>%
+  ggplot(aes(release, mean_rating, count)) +
+  geom_point(aes(release, mean_rating, color = "red")) +
+  geom_point(aes(release, log_count, color = "blue")) +
+  labs(title = "Mean Rating and Number of Views vs. Year of Release", x = "Year of Release") +
+  scale_y_continuous(name = "Mean Rating", sec.axis = sec_axis(trans = ~.^10, name = "Number of Views")) +
+  scale_color_discrete("", labels = c("Count", "Rating"))
+
+
+# The following three steps examine the prevalence of specific movies, users, and genres in the dataset to estimate
+# whether or not reularization of the bias effects will help improve the model
+edx %>%
+  group_by(title) %>%
+  summarize(count = n()) %>%
+  arrange(count) %>%
+  head() %>%
+  knitr::kable()
+
+edx %>%
+  group_by(userId) %>%
+  summarize(count = n()) %>%
+  arrange(count) %>%
+  head() %>%
+  knitr::kable()
+
+edx %>%
+  group_by(genres) %>%
+  summarize(count = n()) %>%
+  arrange(count) %>%
+  head() %>%
+  knitr::kable()
+
+
+
+# Here lambda values ranging from 0 to 10 are used to discount the biases calculated for movies, users, and genres
+# that have relatively few observations.  The RMSEs of predictions resulting from each lambda are stored.
+lambdas <- seq(0,10,1)
+rmses <- sapply(lambdas, function(l){
+  mu <- mean(edx$rating)
+  b_m <- edx %>%
+    group_by(movieId) %>%
+    summarize(b_m = sum(rating - mu) / (n() + l))
+  b_u <- edx %>%
+    group_by(userId) %>%
+    left_join(b_m, by = "movieId") %>%
+    summarize(b_u = sum(rating - mu - b_m) / (n() + l))
+  b_g <- edx %>%
+    group_by(genres) %>%
+    left_join(b_m, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    summarize(b_g = sum(rating - mu - b_m - b_u) / (n() + l))
+  prediction <- edx %>%
+    left_join(b_m, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    left_join(b_g, by = "genres") %>%
+    mutate(pred = mu + b_m + b_u + b_g) %>%
+    .$pred
+  return(RMSE(edx$rating, prediction))
+})
+
+# Generate a plot of the RMSE at different values of lambda
+as.data.frame(lambdas) %>% cbind(rmses) %>% 
+  ggplot(aes(lambdas, rmses, color = "red")) + 
+  geom_point(show.legend = FALSE) +
+  labs(title = "Regularization", x = "Lambdas", y = "Root Mean Square Errors")
+
+
+# This is used to restrict the predictions to within the minimum and maximum ratings that are possible
+# in the data set and slightly reduce errors, since the linear model developed can yield ratings of greater
+# than 5 and less than 0.5.
+within_bounds <- function(x) {
+  if(x > 5){
+    result <- 5
+  } else if (x < 0.5) {
+    result <- 0.5
+  } else {
+    result <- x
+  }
+  return(result)
+}
+
+# This is used to calculate the rmse of the predictions
+RMSE <- function(x,y){
+  SE <- (x - y) ^ 2
+  result <- mean(SE) ^ (1/2)
+  return(result)
+}
+
+
+# calculate the average rating of the training dataset
+mu <- mean(edx$rating)
+
+# As a baseline, this looks at the RMSE if every prediction is simply the average of the whole dataset.
+train_prediction <- edx %>%
+  mutate(pred = mu) %>%
+  .$pred
+
+mu_rmse <- RMSE(edx$rating, train_prediction)
+
+
+# evaluate the RMSE for the training set predictions using only a bias generated from the movies
+b_m <- edx %>%
+  group_by(movieId) %>%
+  summarize(b_m = mean(rating - mu))
+
+train_prediction <- edx %>%
+  left_join(b_m, by = "movieId") %>%
+  mutate(pred = mu + b_m) %>%
+  .$pred
+
+bm_rmse <- RMSE(edx$rating, train_prediction)
+
+# evaluate the RMSE for the training set predictions using only a bias generated from the users
+b_u <- edx %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu))
+
+train_prediction <- edx %>%
+  left_join(b_u, by = "userId") %>%
+  mutate(pred = mu + b_u) %>%
+  .$pred
+
+bu_rmse <- RMSE(edx$rating, train_prediction)
+
+# evaluate the RMSE for the training set predictions using only a bias generated from the genres
+b_g <- edx %>%
+  group_by(genres) %>%
+  summarize(b_g = mean(rating - mu))
+
+train_prediction <- edx %>%
+  left_join(b_g, by = "genres") %>%
+  mutate(pred = mu + b_g) %>%
+  .$pred
+
+bg_rmse <- RMSE(edx$rating, train_prediction)
+
+# Generate a table that presents the rmses using only each bias alone (not combining all effects)
+rmse_results <- 
+  tibble(Methods = c("Just the Average", "Genre Bias", "User Bias", "Movie Bias") , RMSE = c(mu_rmse, bg_rmse, 
+                                                                                             bu_rmse, bm_rmse))
+rmse_results %>% knitr::kable()
+
+
+# Now the complete linear model is generated by combining all three bias effects
+# calculate the movie bias (b_m)
+b_m <- edx %>%
+  group_by(movieId) %>%
+  summarize(b_m = mean(rating - mu))
+
+# calculate the user bias (b_u)
+b_u <- edx %>%
+  left_join(b_m, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu - b_m))
+
+#calculate the genre bias (b_g)
+b_g <- edx %>%
+  left_join(b_m, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  group_by(genres) %>%
+  summarize(b_g = mean(rating - b_m - b_u - mu))
+
+# use the bias effects calculated above to generate predicted ratings on the training set.  Note the use of the 
+# within_bounds function to restrict values to the range 0.5 to 5.0
+train_prediction <- edx %>%
+  left_join(b_m, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  left_join(b_g, by = "genres") %>%
+  mutate(pred = sapply(mu + b_m + b_u + b_g, within_bounds)) %>%
+  .$pred
+
+
+# determine the final RMSE on the validation set using the model generated above
+validation_prediction <- validation %>%
+  left_join(b_m, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  left_join(b_g, by = "genres") %>%
+  mutate(pred = sapply(mu + b_m + b_u + b_g, within_bounds)) %>%
+  .$pred
+
+cat("Validation Set RMSE = ", RMSE(validation$rating, validation_prediction))
+
+
+# The remaining code generates tables and charts to assess the effectiveness of the model
+# This adds the error (absolute value of prediction less the actual rating) to the validation data
+valid_analysis <- validation %>% 
+  mutate(pred = validation_prediction) %>%
+  mutate(error = abs(pred - rating))
+
+# Highest and lowest error by genre
+valid_analysis %>%
+  group_by(genres) %>%
+  summarize(mean_error = mean(error), n = n()) %>%
+  arrange(desc(mean_error)) %>%
+  head() %>%
+  knitr::kable()
+
+valid_analysis %>%
+  group_by(genres) %>%
+  summarize(mean_error = mean(error), n = n()) %>%
+  arrange((mean_error)) %>%
+  head() %>%
+  knitr::kable()
+
+# Highest and lowest error by movie
+valid_analysis %>%
+  group_by(title) %>%
+  summarize(mean_error = mean(error), n = n()) %>%
+  arrange(desc(mean_error)) %>%
+  head() %>%
+  knitr::kable()
+
+valid_analysis %>%
+  group_by(title) %>%
+  summarize(mean_error = mean(error), n = n()) %>%
+  arrange((mean_error)) %>%
+  head() %>%
+  knitr::kable()
+
+# Highest and lowest error by user
+valid_analysis %>%
+  group_by(userId) %>%
+  summarize(mean_error = mean(error), n = n()) %>%
+  arrange(desc(mean_error)) %>%
+  head() %>%
+  knitr::kable()
+
+valid_analysis %>%
+  group_by(userId) %>%
+  summarize(mean_error = mean(error), n = n()) %>%
+  arrange((mean_error)) %>%
+  head() %>%
+  knitr::kable()
+
+# Density plot of the predicted rating compared to the density of the actual rating
+validation %>% cbind(pred = validation_prediction) %>%
+  ggplot() +
+  geom_density(aes(rating, color = "red"), adjust = 5) +
+  geom_density(aes(pred, color = "blue")) +
+  scale_color_discrete("", labels = c("Prediction", "Rating")) + 
+  labs(title = "Actual Rating and Predicted Rating")
+
+# This generates a table of all of the genres in the validation set that includes the "Mystery" genrw as an
+# example to show the entanglement of the various genres in the data
+validation %>% cbind(pred = validation_prediction) %>% 
+  group_by(genres) %>%
+  summarize(prediction = mean(pred), n = n()) %>%
+  filter(str_detect(genres,"^.*Mystery.*$"), n > 200, prediction > 4 | prediction < 3) %>%
+  arrange(prediction) %>%
+  knitr::kable()
+
+

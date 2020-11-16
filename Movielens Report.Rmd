@@ -1,0 +1,366 @@
+---
+title: "Recommendations with Movielens Data"
+author: "Jeff Warchall"
+date: "11/13/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE, echo = FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Executive Summary
+
+The purpose of this analysis is to use the Movielens dataset to develop a recommendation system which predicts as accurately as possible the rating that a particular user will assign to a particular movie; specifically, a root mean square error between the predicted rating and the actual rating of less than **0.86490**.  The Movielens data set used for this project contains approximately 10 million records.  Each record represents a unique conbination of user and movie and contains the following observations for each record:
+
+* User ID
+* Movie ID
+* Rating of this movie by this user out of 5 stars
+* Timestamp of when the rating was made
+* Movie Title
+* List of Genres that the movie fits into
+
+
+To perform this analysis the Movielens set was split into an approximately 90% / 10% partition with the larger set used to train a linear model and the smaller set used to validate the performance of the model.  The linear model fit to the training set considered relationships between each of the observations and the rating with the three most significant effects being retained.  The final result is a model which predicts the rating of a new unique movie and user combination using bias drawn from the user's past behavior in assigning ratings and bias effects from the particular movie's previous ranking and the ranking performance of the genre as a whole.
+
+```{r Load Data, echo = FALSE, message = FALSE}
+library(tidyverse)
+library(caret)
+library(data.table)
+edx <- readRDS("C:\\Users\\jeffw\\R projects\\Movielens-Project\\edx")
+validation <- readRDS("C:\\Users\\jeffw\\R projects\\Movielens-Project\\validation")
+```
+
+## Methods and Analysis
+
+A noteable feature of the dataset is that the release year of every movie is included parenthetically after the movie titles, but is not captured in its own field.  Therefore, the first step was to extract this information and examine the effect that year of release might have on the average rating:
+
+```{r Release Year, echo = FALSE, message = FALSE, fig.cap = "Figure 1: Release Year"}
+# This extracts the four digit year of release from the title and uses it to generate a plot relating mean rating
+# and number of movies to the release year
+edx %>%
+  mutate(release = as.integer(substring(title, nchar(title) - 4, nchar(title) - 1))) %>%
+  select(rating, title, release) %>%
+  group_by(release) %>%
+  summarize(mean_rating = mean(rating), log_count = log10(n())) %>%
+  ggplot(aes(release, mean_rating, count)) +
+  geom_point(aes(release, mean_rating, color = "red")) +
+  geom_point(aes(release, log_count, color = "blue")) +
+  labs(title = "Mean Rating and Number of Views vs. Year of Release", x = "Year of Release") +
+  scale_y_continuous(name = "Mean Rating", sec.axis = sec_axis(trans = ~.^10, name = "Number of Views")) +
+  scale_color_discrete("", labels = c("Count", "Rating"))
+```
+
+
+There is a noticable decline in the mean rating of movies released after approximately 1970; however, there is also a clear increase in the views begining in approximately 1950.  While this could indicate a strong effect where movies released after 1970 are generally worse than those released before 1970, it is also important to note that all of the ratings were given in the 1990's and later.  This indicates that it is more likely that the older movies that are still being viewed and ranked today are likely to be some of the better movies overall.  Thus, it is not that older movies are better, but rather that among older movies, it is only the good ones that are strongly represented in the data set.  
+
+Furthermore, just as some movies are infrequently represented in the data there are some users and genres that appear ony rarely in our training set:
+
+```{r Frequency Tables, echo = FALSE, message = FALSE, fig.cap = "Table 1: Under Represented Factors"}
+# The following three steps examine the prevalence of specific movies, users, and genres in the dataset to estimate
+# whether or not reularization of the bias effects will help improve the model
+edx %>%
+  group_by(title) %>%
+  summarize(count = n()) %>%
+  arrange(count) %>%
+  head() %>%
+  knitr::kable()
+
+edx %>%
+  group_by(userId) %>%
+  summarize(count = n()) %>%
+  arrange(count) %>%
+  head() %>%
+  knitr::kable()
+
+edx %>%
+  group_by(genres) %>%
+  summarize(count = n()) %>%
+  arrange(count) %>%
+  head() %>%
+  knitr::kable()
+```
+
+To account for under represented movies, users, or genres data regularization was attempted to assign less weight to bias for factors that occur only rarely in the data.  Plotting the errors obtained with different values of lambda yields the following:
+
+```{r Regularization, echo = FALSE, message = FALSE, cache = TRUE}
+
+# This is used to calculate the rmse of the predictions
+RMSE <- function(x,y){
+  SE <- (x - y) ^ 2
+  result <- mean(SE) ^ (1/2)
+  return(result)
+}
+
+# Here lambda values ranging from 0 to 10 are used to discount the biases calculated for movies, users, and genres
+# that have relatively few observations.  The RMSEs of predictions resulting from each lambda are stored.
+lambdas <- seq(0,10,1)
+rmses <- sapply(lambdas, function(l){
+  mu <- mean(edx$rating)
+  b_m <- edx %>%
+    group_by(movieId) %>%
+    summarize(b_m = sum(rating - mu) / (n() + l))
+  b_u <- edx %>%
+    group_by(userId) %>%
+    left_join(b_m, by = "movieId") %>%
+    summarize(b_u = sum(rating - mu - b_m) / (n() + l))
+  b_g <- edx %>%
+    group_by(genres) %>%
+    left_join(b_m, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    summarize(b_g = sum(rating - mu - b_m - b_u) / (n() + l))
+  prediction <- edx %>%
+    left_join(b_m, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    left_join(b_g, by = "genres") %>%
+    mutate(pred = mu + b_m + b_u + b_g) %>%
+    .$pred
+  return(RMSE(edx$rating, prediction))
+})
+```
+
+
+
+```{r Lambda Plot, echo = FALSE, fig.cap = "Figure 2: Selecting Lambda"}
+# Generate a plot of the RMSE at different values of lambda
+as.data.frame(lambdas) %>% cbind(rmses) %>% 
+  ggplot(aes(lambdas, rmses, color = "red")) + 
+  geom_point(show.legend = FALSE) +
+  labs(title = "Regularization", x = "Lambdas", y = "Root Mean Square Errors")
+```
+
+
+Here it is seen that the least error can be achieved with a lambda of zero.  Hence, although there are some instances of under represented observations, the effect on the final model is not substantial enough to obtain more accurate predictions through regularization.  Therefore, the linear model for each effect does not includ a lambda value to tune the model.  
+
+The RMSE and within_bounds functions defined below are used to calculate the errors in our models and to restrict the predictions to the range 0.5 to 5 stars.  For example, the model could predict that a good movie, rated by a generous user, in a highly rated genre could result in a predicted rating of more than 5 stars; the within_bounds function would reduce this prediction to 5.0 stars. 
+
+```{r withinbounds, echo = TRUE}
+
+
+# This is used to restrict the predictions to within the minimum and maximum ratings that are possible
+# in the data set and slightly reduce errors, since the linear model developed can yield ratings of greater
+# than 5 and less than 0.5.
+within_bounds <- function(x) {
+  if(x > 5){
+    result <- 5
+  } else if (x < 0.5) {
+    result <- 0.5
+  } else {
+    result <- x
+  }
+  return(result)
+}
+
+# This is used to calculate the rmse of the predictions
+RMSE <- function(x,y){
+  SE <- (x - y) ^ 2
+  result <- mean(SE) ^ (1/2)
+  return(result)
+}
+```
+
+Based on the insights gained thus far, the prediction system was built using a linear model without regularization which considers genre, movie, and user bias.  The accuracy of these three models applied individually to the training set are compared below, with the accuracy of merely predicting the mean rating in all cases included for comparison:
+
+```{r Factor Analysis, echo = FALSE, message = FALSE, fig.cap = "Table 2: Predictions with Single Factors"}
+
+# calculate the average rating of the training dataset
+mu <- mean(edx$rating)
+
+# As a baseline, this looks at the RMSE if every prediction is simply the average of the whole dataset.
+train_prediction <- edx %>%
+  mutate(pred = mu) %>%
+  .$pred
+
+mu_rmse <- RMSE(edx$rating, train_prediction)
+
+# evaluate the RMSE for the training set predictions using only a bias generated from the movies
+b_m <- edx %>%
+  group_by(movieId) %>%
+  summarize(b_m = mean(rating - mu))
+
+train_prediction <- edx %>%
+  left_join(b_m, by = "movieId") %>%
+  mutate(pred = mu + b_m) %>%
+  .$pred
+
+bm_rmse <- RMSE(edx$rating, train_prediction)
+
+# evaluate the RMSE for the training set predictions using only a bias generated from the users
+b_u <- edx %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu))
+
+train_prediction <- edx %>%
+  left_join(b_u, by = "userId") %>%
+  mutate(pred = mu + b_u) %>%
+  .$pred
+
+bu_rmse <- RMSE(edx$rating, train_prediction)
+
+# evaluate the RMSE for the training set predictions using only a bias generated from the genres
+b_g <- edx %>%
+  group_by(genres) %>%
+  summarize(b_g = mean(rating - mu))
+
+train_prediction <- edx %>%
+  left_join(b_g, by = "genres") %>%
+  mutate(pred = mu + b_g) %>%
+  .$pred
+
+bg_rmse <- RMSE(edx$rating, train_prediction)
+
+# Generate a table that presents the rmses using only each bias alone (not combining all effects)
+rmse_results <- 
+  tibble(Methods = c("Just the Average", "Genre Bias", "User Bias", "Movie Bias") , RMSE = c(mu_rmse, bg_rmse, 
+                                                                                              bu_rmse, bm_rmse))
+rmse_results %>% knitr::kable()
+```
+
+None of these factors are sufficient to achieve the desired accuracy alone.  However, by combining the models to include all three factors an acceptable result can be obtained.
+
+
+## Results
+
+Using the knowledge gained above, the final linear model is constructed as follows:
+
+```{r Build Model, echo = TRUE, message = FALSE, cache = TRUE}
+# calculate the average rating of the training dataset
+mu <- mean(edx$rating)
+
+# Now the complete linear model is generated by combining all three bias effects
+# calculate the movie bias (b_m)
+b_m <- edx %>%
+  group_by(movieId) %>%
+  summarize(b_m = mean(rating - mu))
+
+# calculate the user bias (b_u)
+b_u <- edx %>%
+  left_join(b_m, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - mu - b_m))
+
+#calculate the genre bias (b_g)
+b_g <- edx %>%
+  left_join(b_m, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  group_by(genres) %>%
+  summarize(b_g = mean(rating - b_m - b_u - mu))
+
+# use the bias effects calculated above to generate predicted ratings on the training set.  Note the use of the 
+# within_bounds function to restrict values to the range 0.5 to 5.0
+train_prediction <- edx %>%
+  left_join(b_m, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  left_join(b_g, by = "genres") %>%
+  mutate(pred = sapply(mu + b_m + b_u + b_g, within_bounds)) %>%
+  .$pred
+```
+
+Using the linear model thus defined, the final result when the model is applied to the validation set is as follows:
+
+```{r Validation RMSE, echo = FALSE}
+# determine the final RMSE on the validation set using the model generated above
+validation_prediction <- validation %>%
+  left_join(b_m, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  left_join(b_g, by = "genres") %>%
+  mutate(pred = sapply(mu + b_m + b_u + b_g, within_bounds)) %>%
+  .$pred
+
+cat("Validation Set RMSE = ", RMSE(validation$rating, validation_prediction))
+```
+
+This result is below the desired target and the model satisfies the requirements.  However, there are significant errors in extreme cases, such as when a particular combination of genres is only shared by a small number of movies or when a particular user rated a small number of movies.  This effect in the extreme cases might have been reduced using regularization, but as demonstrated above, the overall accuracy of the model was not improved with regularization.
+
+#### Genres
+```{r Top Results Genre, echo = FALSE, message = FALSE, fig.cap = "Table 3: Best and Worst Genre Predictions"}
+# The remaining code generates tables and charts to assess the effectiveness of the model
+# This adds the error (absolute value of prediction less the actual rating) to the validation data
+valid_analysis <- validation %>% 
+  mutate(pred = validation_prediction) %>%
+  mutate(error = abs(pred - rating))
+
+# Highest and lowest error by genre
+valid_analysis %>%
+  group_by(genres) %>%
+  summarize(mean_error = mean(error), n = n()) %>%
+  arrange(desc(mean_error)) %>%
+  head() %>%
+  knitr::kable()
+
+valid_analysis %>%
+  group_by(genres) %>%
+  summarize(mean_error = mean(error), n = n()) %>%
+  arrange((mean_error)) %>%
+  head() %>%
+  knitr::kable()
+
+```
+
+#### Movies
+```{r Top Results Movie, echo = FALSE, message = FALSE, fig.cap = "Table 4: Best and Worst Movie Predictions"}
+# Highest and lowest error by movie
+valid_analysis %>%
+  group_by(title) %>%
+  summarize(mean_error = mean(error), n = n()) %>%
+  arrange(desc(mean_error)) %>%
+  head() %>%
+  knitr::kable()
+
+valid_analysis %>%
+  group_by(title) %>%
+  summarize(mean_error = mean(error), n = n()) %>%
+  arrange((mean_error)) %>%
+  head() %>%
+  knitr::kable()
+```
+
+#### Users
+```{r Top Results User, echo = FALSE, message = FALSE, fig.cap = "Table 5: Best and Worst User Predictions"}
+# Highest and lowest error by user
+valid_analysis %>%
+  group_by(userId) %>%
+  summarize(mean_error = mean(error), n = n()) %>%
+  arrange(desc(mean_error)) %>%
+  head() %>%
+  knitr::kable()
+
+valid_analysis %>%
+  group_by(userId) %>%
+  summarize(mean_error = mean(error), n = n()) %>%
+  arrange((mean_error)) %>%
+  head() %>%
+  knitr::kable()
+```
+
+## Conclusions and Future Work
+
+Overall the model performed to the desired degree of accuracy.  However, there is room for improvement.  For example, the following figure shows that although the predicted ratings were centered near the mean of the actual ratings, the model often predicted a rating close to 3.5 stars whereas an actual 3.5 star rating was rather uncommon as compared to 3 or 4 star ratings.  It may be possible to improve the accuracy of this model by introducing an additional bias against half-star ratings, or perhaps simply rounding intermediate predictions to the nearest full star.
+
+```{r Prediction Density, echo = FALSE, fig.cap = "Figure 3: Density Ploy of Predictions and True Ratings"}
+# Density plot of the predicted rating compared to the density of the actual rating
+validation %>% cbind(pred = validation_prediction) %>%
+  ggplot() +
+  geom_density(aes(rating, color = "red"), adjust = 5) +
+  geom_density(aes(pred, color = "blue")) +
+  scale_color_discrete("", labels = c("Prediction", "Rating")) + 
+  labs(title = "Actual Rating and Predicted Rating")
+```
+
+
+Another potential place for improvement could be in the disentanglement of genres.  For example, in the following table it can be seen that the "Mystery" genre is included in many different sets of genres and that these sets have different biases ranging from 2.6 to 4.2.  Due to this, it is difficult to say what effect the "Mystery" genre alone has on the rankings.  By serperating these genre sets out into something akin to "primary genre", "secondary genre", etc. some improvement could be obtained.  For example, if "Mystery" was, in fact, a positive bias, it could be possible to weigh the "Mystery" bias more heavily if it occurered sooner in the genre list and less heavily if it were later.
+
+```{r Genre Entangle, echo = FALSE, message = FALSE, fig.cap = "Table 6: Mean Predictions for Genres Including Mystery"}
+# This generates a table of all of the genres in the validation set that includes the "Mystery" genrw as an
+# example to show the entanglement of the various genres in the data
+validation %>% cbind(pred = validation_prediction) %>% 
+  group_by(genres) %>%
+  summarize(prediction = mean(pred), n = n()) %>%
+  filter(str_detect(genres,"^.*Mystery.*$"), n > 200, prediction > 4 | prediction < 3) %>%
+  arrange(prediction) %>%
+  knitr::kable()
+
+```
+
+Finally, the timestamp field, which corresponds to the number of seconds elapsed since January 1, 1970 when the rating was given, was not used.  Since the users' locations were not provided in this dataset and since a user's timezone will mean that a given timestamp will correspond to a different time of day for different users, it is not intuitive to see a causal relationship between these timestamps and a rating bias.  Hence, this data was ommitted from the analysis.  Nonetheless, it is possible that a pattern exists within the timestamp data which could be used to improve the model.
+
