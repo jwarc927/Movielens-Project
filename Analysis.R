@@ -73,6 +73,7 @@ within_bounds <- function(x) {
   return(result)
 }
 
+<<<<<<< HEAD
 
 
 
@@ -148,6 +149,11 @@ rmse_results <-
                                                                                               bu_rmse, bm_rmse))
 rmse_results %>% knitr::kable()
 
+=======
+# calculate the average rating of the training dataset
+mu <- mean(edx$rating)
+
+>>>>>>> f5f5d5c56fb4475e22e05e9ca932964283e4e00b
 # calculate the movie bias (b_m)
 b_m <- edx %>%
   group_by(movieId) %>%
@@ -175,10 +181,14 @@ train_prediction <- edx %>%
   mutate(pred = sapply(mu + b_m + b_u + b_g, within_bounds)) %>%
   .$pred
 
+<<<<<<< HEAD
 # evaluate the RMSE for the training set predictions
 final_rmse <- RMSE(edx$rating, train_prediction)
 
 #FUN WITH LAMBDA, discuss how regularization does not hep here
+=======
+#FUN WITH LAMBDA
+>>>>>>> f5f5d5c56fb4475e22e05e9ca932964283e4e00b
 lambdas <- seq(0,10,1)
 rmses <- sapply(lambdas, function(l){
   mu <- mean(edx$rating)
@@ -203,6 +213,7 @@ rmses <- sapply(lambdas, function(l){
   return(RMSE(edx$rating, prediction))
 })
 
+<<<<<<< HEAD
 as.data.frame(lambdas) %>% cbind(rmses) %>% 
   ggplot(aes(lambdas, rmses, color = "red")) + 
   geom_point(show.legend = FALSE) +
@@ -218,6 +229,18 @@ edx %>%
   summarize(count = n()) %>%
   arrange(desc(count)) %>%
   top_n(5)
+=======
+plot(lambdas, rmses)
+# evaluate the RMSE for the training set predictions
+RMSE(edx$rating, train_prediction)
+
+# The following three steps examine the prevalence of specific movies, users, and genres in the dataset to estimate
+# whether or not reularization of the bias effects will help improve the model
+edx %>%
+  group_by(movieId) %>%
+  summarize(count = n()) %>%
+  arrange(count)
+>>>>>>> f5f5d5c56fb4475e22e05e9ca932964283e4e00b
 
 edx %>%
   group_by(userId) %>%
@@ -238,6 +261,7 @@ validation_prediction <- validation %>%
   mutate(pred = sapply(mu + b_m + b_u + b_g, within_bounds)) %>%
   .$pred
 
+<<<<<<< HEAD
 mean(validation_prediction)
 
 cat("Validation Set RMSE = ", RMSE(validation$rating, validation_prediction))
@@ -325,3 +349,17 @@ validation %>% cbind(pred = validation_prediction) %>%
 
 #saveRDS(edx, "C:\\Users\\jeffw\\R projects\\Movielens-Project\\edx")
 #saveRDS(validation, "C:\\Users\\jeffw\\R projects\\Movielens-Project\\validation")
+=======
+RMSE(validation$rating, validation_prediction)
+
+
+
+
+
+
+
+
+
+
+
+>>>>>>> f5f5d5c56fb4475e22e05e9ca932964283e4e00b
